@@ -22,6 +22,10 @@ const FLIPPED_KEY = 'flipped'
 const BAND_KEY = 'bandOpen'
 const MARKS_KEY = 'unreadMarks'
 const READS_KEY = 'readMarks'
+// What one session's process read from the files, kept in the store for every
+// session's process to use while it is fresh, and the session list as last read.
+const FACTS_KEY = 'facts'
+const SESSIONS_KEY = 'sessionsSnapshot'
 const CLOSED_KEY = 'paneClosed'
 const REFRESH_MS = 60_000
 // How often the sessions' states are read again: a session waiting on the
@@ -301,6 +305,34 @@ const UNREAD_SLACK_MS = 2_000
 
 type Live = { host: string; status: string; at: number; updatedAt: number }
 type Seen = { focusedAt: number; activityAt: number }
+/** The files' contents about each session, by session id, and when they were read. */
+type Facts = { at: number; by: string; live: Record<string, Live>; seen: Record<string, Seen> }
+
+/** Tells this session's process from the others that keep facts in the store. */
+const PROCESS_ID = Math.random().toString(36).slice(2)
+
+const toFacts = (value: unknown): Facts | undefined => {
+  const facts = value as Partial<Facts> | null
+  return typeof facts?.at === 'number' && typeof facts.live === 'object' && typeof facts.seen === 'object'
+    ? { at: facts.at, by: typeof facts.by === 'string' ? facts.by : '', live: facts.live ?? {}, seen: facts.seen ?? {} }
+    : undefined
+}
+
+/** The session list the store holds, as SessionRow values; anything else is left out. */
+const toRowsSnapshot = (value: unknown): SessionRow[] => {
+  const rows = (value as { rows?: unknown } | null)?.rows
+  return Array.isArray(rows)
+    ? rows.filter(
+        (row): row is SessionRow =>
+          typeof row?.id === 'string' &&
+          typeof row.title === 'string' &&
+          typeof row.folder === 'string' &&
+          (row.link === null || typeof row.link === 'string') &&
+          typeof row.isRunning === 'boolean' &&
+          typeof row.lastActivityAt === 'string',
+      )
+    : []
+}
 type Cached = { stamp: string; value: unknown }
 
 const join = (...parts: string[]) => parts.join(isWindowsPath(parts[0] ?? '') ? '\\' : '/')
@@ -485,17 +517,30 @@ const stateOf = (
 }
 
 /** Reads the listed sessions' states again; the pane and the tabs redraw where one changed. */
-const pollStates = async ($: EngineInterface) => {
+const pollStates = async ($: EngineInterface, force = false) => {
   try {
     sources ??= { records: await recordsDirOf($), live: await liveDirOf($) }
     const mine = await read($, thisSession)
     const others = await read($, sessions)
     const rows = mine === null ? others : [mine, ...others.filter(row => row.id !== mine.id)]
-    const kept = new Map<string, Cached>()
-    const live = sources.live === null ? new Map<string, Live>() : await readLive($, sources.live, kept)
-    const wanted = new Set(rows.map(row => row.id))
-    const seen = sources.records === null ? new Map<string, Seen>() : await readSeen($, sources.records, wanted, kept)
-    readCache = kept
+    const clockAt = await $.clock.now()
+    // Reading the files is the slow part and the same in every session: when a process read them a moment
+    // ago, this one uses what that one kept. What each session shows of it (this session never unread,
+    // the person's marks) is worked out here, from this session's own point of view.
+    const shared = force ? undefined : toFacts(await $.store.get(FACTS_KEY))
+    let live: Map<string, Live>
+    let seen: Map<string, Seen>
+    if (shared !== undefined && shared.by !== PROCESS_ID && clockAt - shared.at >= 0 && clockAt - shared.at < STATES_MS - 500) {
+      live = new Map(Object.entries(shared.live))
+      seen = new Map(Object.entries(shared.seen))
+    } else {
+      const kept = new Map<string, Cached>()
+      live = sources.live === null ? new Map<string, Live>() : await readLive($, sources.live, kept)
+      const wanted = new Set(rows.map(row => row.id))
+      seen = sources.records === null ? new Map<string, Seen>() : await readSeen($, sources.records, wanted, kept)
+      readCache = kept
+      await $.store.set(FACTS_KEY, { at: clockAt, by: PROCESS_ID, live: Object.fromEntries(live), seen: Object.fromEntries(seen) })
+    }
 
     const marked = await read($, marks)
     const readAts = await read($, readMarks)
@@ -582,7 +627,10 @@ const refresh = async ($: EngineInterface) => {
   const at = await $.clock.now()
 
   try {
-    await setSessions($, await listSessions($))
+    const listed = await listSessions($)
+    await setSessions($, listed)
+    const self = await read($, thisSession)
+    await $.store.set(SESSIONS_KEY, { at, rows: self === null ? listed : [self, ...listed.filter(row => row.id !== self.id)] })
     await update($, probe, () => ({ ok: true, error: null, at }))
   } catch (error) {
     await update($, probe, () => ({ ok: false, error: String(error), at }))
@@ -647,7 +695,7 @@ const openSession = async ($: EngineInterface, row: SessionRow) => {
 const markUnread = async ($: EngineInterface, row: SessionRow) => {
   await saveMarks($, { ...(await read($, marks)), [row.id]: await $.clock.now() })
   await saveReads($, Object.fromEntries(Object.entries(await read($, readMarks)).filter(([id]) => id !== row.id)))
-  await pollStates($)
+  await pollStates($, true)
 
   return `Marked "${row.title}" unread.`
 }
@@ -665,7 +713,7 @@ const markRead = async ($: EngineInterface, rows: readonly SessionRow[]) => {
   }
   await saveReads($, reads)
   await saveMarks($, Object.fromEntries(Object.entries(await read($, marks)).filter(([id]) => !ids.has(id))))
-  await pollStates($)
+  await pollStates($, true)
 
   return rows.length === 1 ? `Marked "${rows[0]?.title ?? ''}" read.` : `Marked ${rows.length} sessions read.`
 }
@@ -1314,7 +1362,7 @@ const describe = (list: readonly Pin[], rows: readonly SessionRow[]) => {
 
 const status = async ($: EngineInterface) => {
   await refresh($)
-  await pollStates($)
+  await pollStates($, true)
   const last = await read($, probe)
   const rows = await read($, sessions)
 
@@ -1437,6 +1485,12 @@ export const register: Register = on => {
     const started = await next(e)
     sources = undefined
     readCache = new Map()
+    // A new session shows the list and the states the store holds at once, and refreshes behind them.
+    const cached = toRowsSnapshot(await $.store.get(SESSIONS_KEY))
+    if (cached.length > 0) {
+      await setSessions($, cached)
+      void pollStates($)
+    }
     void refresh($)
     $.clock.every(REFRESH_MS, () => refresh($))
     $.clock.every(STATES_MS, () => pollStates($))
