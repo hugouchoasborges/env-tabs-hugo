@@ -21,6 +21,8 @@ and a **tab above the prompt** for every project you pin.
 
 <sub>Demo projects. The pictures are drawn by <a href="docs/demo/render.mjs">docs/demo/render.mjs</a> with the mod's own icons and colors.</sub>
 
+<sub>Personal fork of <a href="https://github.com/ahmtsahin/claude-env-tabs">ahmtsahin/claude-env-tabs</a> (MIT), by Hugo Borges.</sub>
+
 </div>
 
 <br>
@@ -74,13 +76,13 @@ A project's row and its tab **count the sessions that need you**: the ones waiti
 At the prompt of a terminal session:
 
 ```
-/plugin install env-tabs --marketplace hugouchoasborges/env-tabs-hugo
+/plugin install env-tabs-hugo --marketplace hugouchoasborges/env-tabs-hugo
 ```
 
 Or from a shell:
 
 ```
-claude plugin install env-tabs --marketplace hugouchoasborges/env-tabs-hugo
+claude plugin install env-tabs-hugo --marketplace hugouchoasborges/env-tabs-hugo
 ```
 
 Answer `y` to add the marketplace and pick the **user** scope, so the pane and the tabs show in every session.

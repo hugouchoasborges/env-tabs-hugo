@@ -3,15 +3,15 @@ import type { ElementTable, EngineInterface, Register } from 'claude-code'
 
 import type { Pin, SessionRow, SessionState } from '../types'
 
-const pins = atom({ plugin: 'env-tabs', key: 'pins' } as const, [])
-const sessions = atom({ plugin: 'env-tabs', key: 'sessions' } as const, [])
-const thisSession = atom({ plugin: 'env-tabs', key: 'thisSession' } as const, null)
-const here = atom({ plugin: 'env-tabs', key: 'here' } as const, '')
-const flipped = atom({ plugin: 'env-tabs', key: 'flipped' } as const, [])
-const states = atom({ plugin: 'env-tabs', key: 'states' } as const, {})
-const probe = atom({ plugin: 'env-tabs', key: 'probe' } as const, null)
-const filter = atom({ plugin: 'env-tabs', key: 'filter' } as const, '')
-const menu = atom({ plugin: 'env-tabs', key: 'menu' } as const, '')
+const pins = atom({ plugin: 'env-tabs-hugo', key: 'pins' } as const, [])
+const sessions = atom({ plugin: 'env-tabs-hugo', key: 'sessions' } as const, [])
+const thisSession = atom({ plugin: 'env-tabs-hugo', key: 'thisSession' } as const, null)
+const here = atom({ plugin: 'env-tabs-hugo', key: 'here' } as const, '')
+const flipped = atom({ plugin: 'env-tabs-hugo', key: 'flipped' } as const, [])
+const states = atom({ plugin: 'env-tabs-hugo', key: 'states' } as const, {})
+const probe = atom({ plugin: 'env-tabs-hugo', key: 'probe' } as const, null)
+const filter = atom({ plugin: 'env-tabs-hugo', key: 'filter' } as const, '')
+const menu = atom({ plugin: 'env-tabs-hugo', key: 'menu' } as const, '')
 
 const STORE_KEY = 'pins'
 const FLIPPED_KEY = 'flipped'
@@ -24,7 +24,7 @@ const STATES_MS = 4_000
 // in a smaller size when the larger one is refused.
 const LIST_LIMITS = [60, 30, 15]
 const TOO_LARGE = /exceeds maximum allowed tokens/i
-const TOOL = 'mcp__env-tabs__tabs'
+const TOOL = 'mcp__env-tabs-hugo__tabs'
 const PANE = 'projects'
 const PANE_TITLE = 'Projects'
 // The most sessions an open project lists in the pane.
@@ -33,7 +33,7 @@ const SHOWN = 5
 const ACTIVE_SHOWN = 15
 
 const HELP = [
-  'Usage: /env-tabs [list | pin [folder] | unpin <n> | move <n> <to> | rename <n> <label> | panel | next | status]',
+  'Usage: /env-tabs-hugo [list | pin [folder] | unpin <n> | move <n> <to> | rename <n> <label> | panel | next | status]',
   "  pin     pins this session's project (or the folder given): a tab, and a place at the top of the Projects pane",
   '  unpin   removes tab <n> (or the tab with that label)',
   '  move    moves tab <n> to position <to>',
@@ -1136,7 +1136,7 @@ const renameTab = async ($: EngineInterface, key: string, label: string) => {
 
 const describe = (list: readonly Pin[], rows: readonly SessionRow[]) => {
   if (list.length === 0) {
-    return 'No pinned folders yet. Run /env-tabs pin in a session to pin its project.'
+    return 'No pinned folders yet. Run /env-tabs-hugo pin in a session to pin its project.'
   }
 
   return list
@@ -1234,14 +1234,14 @@ const runTool = async ($: EngineInterface, input: ToolInput) => {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'env-tabs',
+      name: 'env-tabs-hugo',
       description: 'Pinned projects as tabs above the prompt and at the top of a Projects pane',
       argumentHint: '[list|pin|unpin|move|rename|panel|next|status]',
     })
     await $.tool.register({
       name: 'tabs',
       description:
-        "Reads and changes env-tabs: pinned projects (folders), each drawn as a tab above the prompt in Claude Desktop's Code tab " +
+        "Reads and changes env-tabs-hugo: pinned projects (folders), each drawn as a tab above the prompt in Claude Desktop's Code tab " +
         'and kept at the top of its Projects pane, which lists every recent project with its sessions. ' +
         'action "status" lists the pins and what they see; "pin" pins a folder (this session\'s project when none is given); ' +
         '"unpin", "move" and "rename" take a tab by its 1-based number or its label; "panel" opens the Projects pane; "next" opens the session that waits for the person, else an unread one.',
@@ -1289,13 +1289,13 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'env-tabs' }, async ($, e) => ({
+  on('command.run', { command: 'env-tabs-hugo' }, async ($, e) => ({
     text: await runCommand($, e.args),
   }))
 
   on('tool.call', { tool: TOOL }, async ($, e) => ({
     result: await runTool($, e as unknown as ToolInput),
-  })).catch(() => ({ result: 'env-tabs could not answer; run /env-tabs status to see why.' }))
+  })).catch(() => ({ result: 'env-tabs-hugo could not answer; run /env-tabs-hugo status to see why.' }))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const folder = await read($, here)

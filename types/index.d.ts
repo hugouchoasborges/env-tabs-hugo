@@ -35,7 +35,7 @@ export type Probe = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'env-tabs': {
+    'env-tabs-hugo': {
       pins: Pin[]
       /** The other sessions, as list_sessions answers: it leaves this one out. */
       sessions: SessionRow[]

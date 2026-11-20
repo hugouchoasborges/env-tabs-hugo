@@ -2,8 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-const PLUGIN = 'env-tabs'
-const TOOL = 'mcp__env-tabs__tabs'
+const PLUGIN = 'env-tabs-hugo'
+const TOOL = 'mcp__env-tabs-hugo__tabs'
 const PANE = 'projects'
 const HERE = 'C:\\work\\scratch'
 const NOW = Date.parse('2026-10-16T12:00:00Z')

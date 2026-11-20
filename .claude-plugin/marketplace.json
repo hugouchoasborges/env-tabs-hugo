@@ -1,10 +1,10 @@
 {
   "name": "env-tabs-hugo",
-  "description": "env-tabs: pinned projects in a Projects pane and tabs for Claude Desktop's Code tab.",
+  "description": "env-tabs-hugo: pinned projects in a Projects pane and tabs for Claude Desktop's Code tab.",
   "owner": { "name": "Hugo Borges" },
   "plugins": [
     {
-      "name": "env-tabs",
+      "name": "env-tabs-hugo",
       "source": "./",
       "description": "Pin projects in Claude Desktop's Code tab: a Projects pane with the pinned ones on top, and a tab above the prompt for each."
     }

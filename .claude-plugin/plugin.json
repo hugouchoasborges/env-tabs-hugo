@@ -1,8 +1,8 @@
 {
-  "name": "env-tabs",
+  "name": "env-tabs-hugo",
   "version": "0.3.7-hugo.1",
   "description": "Pin projects in Claude Desktop's Code tab: a Projects pane with the pinned ones on top, and a tab above the prompt for each.",
-  "author": { "name": "Ahmet Sahin", "url": "https://github.com/ahmtsahin" },
+  "author": { "name": "Hugo Borges", "url": "https://github.com/hugouchoasborges" },
   "homepage": "https://github.com/hugouchoasborges/env-tabs-hugo",
   "repository": "https://github.com/hugouchoasborges/env-tabs-hugo",
   "license": "MIT",
