@@ -51,6 +51,8 @@ declare module 'claude-code' {
       filter: string
       /** The key of the pinned project whose actions menu is open, or an empty text. */
       menu: string
+      /** Whether the band above the prompt shows the pinned projects' tabs. */
+      bandOpen: boolean
     }
   }
 }

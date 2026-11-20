@@ -53,6 +53,8 @@ type World = {
   os?: string
   opens?: boolean
   files?: Record<string, object>
+  /** Whether the band starts with the tabs showing; it does here, unlike in the app. */
+  bandOpen?: boolean
 }
 
 const USER = 'C:\\Users\\me'
@@ -113,14 +115,14 @@ const fileSystem = (on: On, files: Record<string, object>) => {
 /** Everything beneath the plugin: the app's tools, the store, the clock, the OS, the files. */
 const world = (
   on: On,
-  { rows = [], self, root = HERE, os = 'Windows_NT', opens = true, files = {} }: World = {},
+  { rows = [], self, root = HERE, os = 'Windows_NT', opens = true, files = {}, bandOpen = true }: World = {},
 ) => {
   const calls: AppCall[] = []
   const opened: string[][] = []
   const panes: string[] = []
   const toasts: string[] = []
 
-  mock.store(on)
+  mock.store(on, { bandOpen })
   const clock = mock.clock(on, { now: NOW })
   mock.env(
     on,
@@ -352,15 +354,28 @@ describe('the band', () => {
       expect(panes.slice(before)).toEqual([PANE])
     })
 
-    test(`a session with no folder still gets the Projects button (${surface})`, async ($, on) => {
-      const { panes } = world(on, { root: '' })
+    test(`a closed band holds only the pin offer and the Projects button (${surface})`, async ($, on) => {
+      world(on, { bandOpen: false })
+      await pin($, 'D:\\Projects\\shop')
       const band = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: BAND })
-      const before = panes.length
 
-      expect(await band.find({ key: 'pin-here' })).toBeUndefined()
+      expect(await band.find({ key: 'pin-here' })).toBeDefined()
+      expect(await band.find({ key: 'projects' })).toBeDefined()
+      expect(await band.find({ key: 'tab:d:\\projects\\shop' })).toBeUndefined()
+      expect(await band.find({ key: 'panel' })).toBeUndefined()
+    })
+
+    test(`Projects opens the tabs and closes them again (${surface})`, async ($, on) => {
+      world(on, { bandOpen: false })
+      await pin($, 'D:\\Projects\\shop')
+      const band = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: BAND })
+
       await band.press({ key: 'projects' })
+      expect(nodeIn(await band.drawn(), keyed('tab:d:\\projects\\shop'))).toBeDefined()
+      expect(await band.find({ type: 'Button', text: 'Projects ▼' })).toBeDefined()
 
-      expect(panes.slice(before)).toEqual([PANE])
+      await band.press({ key: 'projects' })
+      expect(nodeIn(await band.drawn(), keyed('tab:d:\\projects\\shop'))).toBeUndefined()
     })
 
     test(`a redraw keeps the handles of its buttons (${surface})`, async ($, on) => {
@@ -371,7 +386,7 @@ describe('the band', () => {
 
       await band.redraw({ ...BAND, isWorking: true })
 
-      expect(Object.keys(before)).toEqual(['tab:d:\\projects\\shop', 'pin-here', 'projects'])
+      expect(Object.keys(before)).toEqual(['tab:d:\\projects\\shop', 'pin-here', 'projects', 'panel'])
       expect(handlesOf(await band.drawn())).toEqual(before)
     })
   }

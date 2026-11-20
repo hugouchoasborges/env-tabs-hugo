@@ -12,9 +12,11 @@ const states = atom({ plugin: 'env-tabs-hugo', key: 'states' } as const, {})
 const probe = atom({ plugin: 'env-tabs-hugo', key: 'probe' } as const, null)
 const filter = atom({ plugin: 'env-tabs-hugo', key: 'filter' } as const, '')
 const menu = atom({ plugin: 'env-tabs-hugo', key: 'menu' } as const, '')
+const bandOpen = atom({ plugin: 'env-tabs-hugo', key: 'bandOpen' } as const, false)
 
 const STORE_KEY = 'pins'
 const FLIPPED_KEY = 'flipped'
+const BAND_KEY = 'bandOpen'
 const CLOSED_KEY = 'paneClosed'
 const REFRESH_MS = 60_000
 // How often the sessions' states are read again: a session waiting on the
@@ -460,9 +462,20 @@ const statesLine = () => {
   return `Session states: read from ${sources.records ?? '(no session records)'} and ${sources.live ?? '(no session files)'}.`
 }
 
+/** Opens or closes the project tabs in the band; the choice is kept across sessions. */
+const toggleBand = async ($: EngineInterface) => {
+  const next = !(await read($, bandOpen))
+  await $.store.set(BAND_KEY, next)
+  await update($, bandOpen, () => next)
+}
+
 const refresh = async ($: EngineInterface) => {
   await setPins($, await loadPins($))
   await setFlipped($, toKeys(await $.store.get(FLIPPED_KEY)))
+  const isBandOpen = (await $.store.get(BAND_KEY)) === true
+  if ((await read($, bandOpen)) !== isBandOpen) {
+    await update($, bandOpen, () => isBandOpen)
+  }
   await setHere($, await $.session.root())
   await setThisSession($, await readThisSession($))
   const at = await $.clock.now()
@@ -1304,84 +1317,57 @@ export const register: Register = on => {
     if (e.props.hasSurvey) {
       return next(e)
     }
-    // A session with no folder has no project to show, but the Projects button
-    // still opens the pane from here.
-    if (folder === '') {
-      const aloneEls = $.ui.resolve(e)
-      const { Box, Button } = aloneEls
-      const aloneState = await readActivity($)
-      const keepAlone = keeperOf(e)
-      const aloneActivity = activityOf($, aloneEls, keepAlone, aloneState)
-
-      return (
-        <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
-          {keepAlone('projects', [], () => (
-            <Button
-              key="projects"
-              plain
-              dimColor
-              label="Projects"
-              onPress={async () => {
-                const said = await showPane($)
-                if (said !== '') {
-                  $.ui.toast(said)
-                }
-              }}
-            />
-          ))}
-          {aloneActivity}
-        </Box>
-      )
-    }
-
     const list = await read($, pins)
     const mine = await read($, thisSession)
     const others = await read($, sessions)
     const value = await read($, states)
+    const isOpen = await read($, bandOpen)
     const rows = mine === null ? others : [mine, ...others.filter(row => row.id !== mine.id)]
-    const current = pinOf(folder, list)
+    // A session with no folder has no project of its own: no pin to offer, no tab to fill.
+    const current = folder === '' ? undefined : pinOf(folder, list)
     const els = $.ui.resolve(e)
     const { Box, Button } = els
     const activityState = await readActivity($)
-    const openMenu = await read($, menu)
     const keep = keeperOf(e)
     const quiet = quietOf(e.surface)
     const activity = activityOf($, els, keep, activityState)
 
+    // Closed, the band holds only the pin offer and the Projects button; the
+    // tabs of the pinned projects show once it is opened.
     return (
       <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
-        {list.map(pin => {
-          const key = `tab:${normalize(pin.folder)}`
-          const isCurrent = current?.folder === pin.folder
-          const ids = rows.filter(row => pinOf(row.folder, list)?.folder === pin.folder).map(row => row.id)
+        {isOpen &&
+          list.map(pin => {
+            const key = `tab:${normalize(pin.folder)}`
+            const isCurrent = current?.folder === pin.folder
+            const ids = rows.filter(row => pinOf(row.folder, list)?.folder === pin.folder).map(row => row.id)
 
-          return (
-            <Box
-              key={`tabrow:${normalize(pin.folder)}`}
-              flexDirection="row"
-              alignItems="center"
-              columnGap={1}
-              paddingRight={1}
-              {...fillOf(e.surface, isCurrent)}
-            >
-              {iconOf(els, e.surface, keyOf(pin.folder), pin.label)}
-              {keep(key, [pin, isCurrent], () => (
-                <Button
-                  key={key}
-                  plain
-                  dimColor={!isCurrent}
-                  {...quiet}
-                  label={pin.label}
-                  onPress={() => goTo($, pin)}
-                />
-              ))}
-              {markOf(els, e.surface, ids, value)}
-              {moreOf($, els, keep, keyOf(pin.folder), openMenu === keyOf(pin.folder))}
-              {openMenu === keyOf(pin.folder) && menuOf($, els, keep, pin, list)}
-            </Box>
-          )
-        })}
-        {current === undefined &&
+            return (
+              <Box
+                key={`tabrow:${normalize(pin.folder)}`}
+                flexDirection="row"
+                alignItems="center"
+                columnGap={1}
+                paddingRight={1}
+                {...fillOf(e.surface, isCurrent)}
+              >
+                {iconOf(els, e.surface, keyOf(pin.folder), pin.label)}
+                {keep(key, [pin, isCurrent], () => (
+                  <Button
+                    key={key}
+                    plain
+                    dimColor={!isCurrent}
+                    {...quiet}
+                    label={pin.label}
+                    onPress={() => goTo($, pin)}
+                  />
+                ))}
+                {markOf(els, e.surface, ids, value)}
+              </Box>
+            )
+          })}
+        {folder !== '' &&
+          current === undefined &&
           !isScratch(folder) &&
           keep('pin-here', [folder], () => (
             <Button
@@ -1391,20 +1377,30 @@ export const register: Register = on => {
               onPress={async () => $.ui.toast(await pinFolder($, projectFolder(folder)))}
             />
           ))}
-        {keep('projects', [], () => (
+        {keep('projects', [isOpen], () => (
           <Button
             key="projects"
             plain
             dimColor
-            label="Projects"
-            onPress={async () => {
-              const said = await showPane($)
-              if (said !== '') {
-                $.ui.toast(said)
-              }
-            }}
+            label={isOpen ? 'Projects ▼' : 'Projects ▲'}
+            onPress={() => toggleBand($)}
           />
         ))}
+        {isOpen &&
+          keep('panel', [], () => (
+            <Button
+              key="panel"
+              plain
+              dimColor
+              label="Panel"
+              onPress={async () => {
+                const said = await showPane($)
+                if (said !== '') {
+                  $.ui.toast(said)
+                }
+              }}
+            />
+          ))}
         {activity}
       </Box>
     )
