@@ -356,7 +356,7 @@ describe('the band', () => {
       expect(panes.slice(before)).toEqual([PANE])
     })
 
-    test(`a closed band holds only the pin offer and the Projects button (${surface})`, async ($, on) => {
+    test(`a closed band holds only the pin offer, the Projects toggle and the Panel button (${surface})`, async ($, on) => {
       world(on, { bandOpen: false })
       await pin($, 'D:\\Projects\\shop')
       const band = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: BAND })
@@ -364,7 +364,7 @@ describe('the band', () => {
       expect(await band.find({ key: 'pin-here' })).toBeDefined()
       expect(await band.find({ key: 'projects' })).toBeDefined()
       expect(await band.find({ key: 'tab:d:\\projects\\shop' })).toBeUndefined()
-      expect(await band.find({ key: 'panel' })).toBeUndefined()
+      expect(await band.find({ key: 'panel' })).toBeDefined()
     })
 
     test(`Projects opens the tabs and closes them again (${surface})`, async ($, on) => {

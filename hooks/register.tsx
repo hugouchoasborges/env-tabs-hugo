@@ -1507,9 +1507,9 @@ export const register: Register = on => {
       await setSessions($, cached)
       void pollStates($)
     }
-    // A new session starts with the band's tabs shown and the pane open.
-    await $.store.set(BAND_KEY, true)
-    await update($, bandOpen, () => true)
+    // A new session starts with the band collapsed and the pane open.
+    await $.store.set(BAND_KEY, false)
+    await update($, bandOpen, () => false)
     void refresh($)
     $.clock.every(REFRESH_MS, () => refresh($))
     $.clock.every(STATES_MS, () => pollStates($))
@@ -1547,12 +1547,13 @@ export const register: Register = on => {
     const quiet = quietOf(e.surface)
     const activity = activityOf($, els, keep, activityState)
 
-    // Closed, the band holds only the pin offer and the Projects button; the
-    // tabs of the pinned projects show once it is opened.
+    // Closed, the band holds only the pin offer, the Projects toggle and the
+    // Panel button; opened, the pinned projects' tabs show in a row above them.
     return (
-      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
-        {isOpen &&
-          list.map(pin => {
+      <Box flexDirection="column">
+        {isOpen && (
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+            {list.map(pin => {
             const key = `tab:${normalize(pin.folder)}`
             const isCurrent = current?.folder === pin.folder
             const ids = rows.filter(row => pinOf(row.folder, list)?.folder === pin.folder).map(row => row.id)
@@ -1580,7 +1581,10 @@ export const register: Register = on => {
                 {markOf(els, e.surface, ids, value)}
               </Box>
             )
-          })}
+            })}
+          </Box>
+        )}
+        <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
         {folder !== '' &&
           current === undefined &&
           !isScratch(folder) &&
@@ -1601,22 +1605,22 @@ export const register: Register = on => {
             onPress={() => toggleBand($)}
           />
         ))}
-        {isOpen &&
-          keep('panel', [], () => (
-            <Button
-              key="panel"
-              plain
-              dimColor
-              label="Panel"
-              onPress={async () => {
-                const said = await showPane($)
-                if (said !== '') {
-                  $.ui.toast(said)
-                }
-              }}
-            />
-          ))}
+        {keep('panel', [], () => (
+          <Button
+            key="panel"
+            plain
+            dimColor
+            label="Panel"
+            onPress={async () => {
+              const said = await showPane($)
+              if (said !== '') {
+                $.ui.toast(said)
+              }
+            }}
+          />
+        ))}
         {activity}
+        </Box>
       </Box>
     )
   })
