@@ -26,8 +26,11 @@ const READS_KEY = 'readMarks'
 // session's process to use while it is fresh, and the session list as last read.
 const FACTS_KEY = 'facts'
 const SESSIONS_KEY = 'sessionsSnapshot'
-const CLOSED_KEY = 'paneClosed'
 const REFRESH_MS = 60_000
+// The app refuses its tools for a moment at a session's start.
+const STARTING = /Session state unavailable/i
+const RETRIES = 5
+const RETRY_MS = 2_000
 // How often the sessions' states are read again: a session waiting on the
 // person should show soon.
 const STATES_MS = 4_000
@@ -607,6 +610,15 @@ const toggleBand = async ($: EngineInterface) => {
   await update($, bandOpen, () => next)
 }
 
+/** Reads the session list into the atoms and the store, and marks the read as good. */
+const readSessions = async ($: EngineInterface, at: number) => {
+  const listed = await listSessions($)
+  await setSessions($, listed)
+  const self = await read($, thisSession)
+  await $.store.set(SESSIONS_KEY, { at, rows: self === null ? listed : [self, ...listed.filter(row => row.id !== self.id)] })
+  await update($, probe, () => ({ ok: true, error: null, at }))
+}
+
 const refresh = async ($: EngineInterface) => {
   await setPins($, await loadPins($))
   await setFlipped($, toKeys(await $.store.get(FLIPPED_KEY)))
@@ -626,14 +638,19 @@ const refresh = async ($: EngineInterface) => {
   await setThisSession($, await readThisSession($))
   const at = await $.clock.now()
 
-  try {
-    const listed = await listSessions($)
-    await setSessions($, listed)
-    const self = await read($, thisSession)
-    await $.store.set(SESSIONS_KEY, { at, rows: self === null ? listed : [self, ...listed.filter(row => row.id !== self.id)] })
-    await update($, probe, () => ({ ok: true, error: null, at }))
-  } catch (error) {
-    await update($, probe, () => ({ ok: false, error: String(error), at }))
+  // The app refuses its tools for a moment while a new session starts: ask again before showing an error.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await readSessions($, at)
+      break
+    } catch (error) {
+      if (attempt < RETRIES && STARTING.test(String(error))) {
+        await new Promise(done => setTimeout(done, RETRY_MS))
+        continue
+      }
+      await update($, probe, () => ({ ok: false, error: String(error), at }))
+      break
+    }
   }
   sources = { records: await recordsDirOf($), live: await liveDirOf($) }
   await pollStates($)
@@ -1266,7 +1283,6 @@ const markOf = (
 
 /** Opens the pane at the person's ask: what to tell them when it is not drawn, or nothing. */
 const showPane = async ($: EngineInterface) => {
-  await $.store.set(CLOSED_KEY, false)
   const opened = await $.ui.open({ id: PANE, title: PANE_TITLE })
 
   return opened.isPlaced ? '' : `The Projects pane is not drawn yet: ${opened.reason}`
@@ -1491,25 +1507,16 @@ export const register: Register = on => {
       await setSessions($, cached)
       void pollStates($)
     }
+    // A new session starts with the band's tabs shown and the pane open.
+    await $.store.set(BAND_KEY, true)
+    await update($, bandOpen, () => true)
     void refresh($)
     $.clock.every(REFRESH_MS, () => refresh($))
     $.clock.every(STATES_MS, () => pollStates($))
-    // The pane opens by itself where the surface has room for it beside the
-    // transcript, unless the person closed it.
-    if ((await $.store.get(CLOSED_KEY)) !== true) {
-      void $.ui.open({ id: PANE, title: PANE_TITLE })
-    }
+    // The pane opens by itself where the surface has room for it beside the transcript.
+    void $.ui.open({ id: PANE, title: PANE_TITLE })
 
     return started
-  })
-
-  // A pane the person closed stays closed in later sessions, until they open it again.
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    if (e.origin.kind === 'person') {
-      await $.store.set(CLOSED_KEY, true)
-    }
-
-    return next(e)
   })
 
   on('command.run', { command: 'env-tabs-hugo' }, async ($, e) => ({
