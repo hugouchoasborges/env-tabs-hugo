@@ -31,6 +31,8 @@ const PANE_TITLE = 'Projects'
 const SHOWN = 5
 // The most sessions the Active section lists.
 const ACTIVE_SHOWN = 15
+// The most sessions the Recent section lists.
+const RECENT_SHOWN = 5
 
 const HELP = [
   'Usage: /env-tabs-hugo [list | pin [folder] | unpin <n> | move <n> <to> | rename <n> <label> | panel | next | status]',
@@ -1434,6 +1436,9 @@ export const register: Register = on => {
     const pinned = projects.pinned.filter(keepProject)
     const rest = projects.rest.filter(keepProject)
     const active = activeOf(matching, value)
+    const recent = [...matching]
+      .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
+      .slice(0, RECENT_SHOWN)
     const projectName = (row: SessionRow) =>
       pinOf(row.folder, list)?.label ??
       (isScratch(row.folder) ? SCRATCH_LABEL : baseName(projectFolder(row.folder)))
@@ -1601,6 +1606,14 @@ export const register: Register = on => {
               Projects
             </Text>
             {rest.map(projectRow)}
+          </Box>
+        )}
+        {recent.length > 0 && (
+          <Box flexDirection="column">
+            <Text dimColor size="caption" weight="medium">
+              Recent
+            </Text>
+            {recent.map(row => sessionRow(row, 'recent:'))}
           </Box>
         )}
         {last?.ok === false && (

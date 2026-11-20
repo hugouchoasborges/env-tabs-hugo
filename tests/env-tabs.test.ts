@@ -734,6 +734,34 @@ describe('the Projects pane', () => {
   })
 })
 
+describe('the Recent section', () => {
+  test('lists the five latest sessions of any project, the latest first', async ($, on) => {
+    const rows = [
+      session('s1', 'D:\\A', '2026-10-16T10:00:00Z'),
+      session('s2', 'D:\\B', '2026-10-16T11:00:00Z'),
+      session('s3', 'D:\\C', '2026-10-16T09:00:00Z'),
+      session('s4', 'D:\\D', '2026-10-16T11:30:00Z'),
+      session('s5', 'D:\\E', '2026-10-16T08:00:00Z'),
+      session('s6', 'D:\\F', '2026-10-16T07:00:00Z'),
+    ]
+    world(on, { rows })
+    await pin($, 'D:\\A')
+    const pane = await mountPane($, 'desktop')
+
+    const order = (await pane.findAll({ type: 'Button' }))
+      .map(button => button.key ?? '')
+      .filter(key => key.startsWith('recent:session:'))
+
+    expect(order).toEqual([
+      'recent:session:s4',
+      'recent:session:s2',
+      'recent:session:s1',
+      'recent:session:s3',
+      'recent:session:s5',
+    ])
+  })
+})
+
 describe('the actions menu', () => {
   test("the ⋯ button opens a pin's actions, and Right moves its tab", async ($, on) => {
     world(on, { rows: [] })
