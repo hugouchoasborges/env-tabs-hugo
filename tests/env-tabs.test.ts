@@ -352,6 +352,17 @@ describe('the band', () => {
       expect(panes.slice(before)).toEqual([PANE])
     })
 
+    test(`a session with no folder still gets the Projects button (${surface})`, async ($, on) => {
+      const { panes } = world(on, { root: '' })
+      const band = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: BAND })
+      const before = panes.length
+
+      expect(await band.find({ key: 'pin-here' })).toBeUndefined()
+      await band.press({ key: 'projects' })
+
+      expect(panes.slice(before)).toEqual([PANE])
+    })
+
     test(`a redraw keeps the handles of its buttons (${surface})`, async ($, on) => {
       world(on)
       await pin($, 'D:\\Projects\\shop')

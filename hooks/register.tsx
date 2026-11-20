@@ -1106,8 +1106,33 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const folder = await read($, here)
-    if (e.props.hasSurvey || folder === '') {
+    if (e.props.hasSurvey) {
       return next(e)
+    }
+    // A session with no folder has no project to show, but the Projects button
+    // still opens the pane from here.
+    if (folder === '') {
+      const { Box, Button } = $.ui.resolve(e)
+      const keepAlone = keeperOf(e)
+
+      return (
+        <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+          {keepAlone('projects', [], () => (
+            <Button
+              key="projects"
+              plain
+              dimColor
+              label="Projects"
+              onPress={async () => {
+                const said = await showPane($)
+                if (said !== '') {
+                  $.ui.toast(said)
+                }
+              }}
+            />
+          ))}
+        </Box>
+      )
     }
 
     const list = await read($, pins)
