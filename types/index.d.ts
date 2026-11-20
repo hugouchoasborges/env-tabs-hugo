@@ -57,6 +57,8 @@ declare module 'claude-code' {
       marks: Record<string, number>
       /** The id of the session whose actions menu is open, or an empty text. */
       sessionMenu: string
+      /** Sessions the person marked read in this plugin, by id, with the time of the mark. */
+      readMarks: Record<string, number>
     }
   }
 }

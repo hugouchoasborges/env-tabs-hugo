@@ -789,6 +789,63 @@ describe('the session menu and the records folder', () => {
   })
 })
 
+describe('marking read', () => {
+  const AT = NOW - 3_600_000
+  const dot = (drawn: unknown, id: string) =>
+    nodeIn(nodeIn(drawn, keyed(`srow:${id}`)), one => one.type === 'Svg')?.props?.alt
+  // Finished after the person last looked: unread.
+  const UNREAD = { ...record('local_u', AT - 60_000, AT) }
+
+  test('Mark read on a session clears its blue dot', async ($, on) => {
+    world(on, { rows: [session('local_u', 'D:\\Projects\\shop', '2026-10-16T11:40:00Z')], files: UNREAD })
+    await pin($, 'D:\\Projects\\shop')
+    const pane = await mountPane($, 'desktop')
+    expect(dot(await pane.drawn(), 'local_u')).toBe('Unread')
+
+    await pane.press({ key: 'smore:local_u' })
+    await pane.press({ key: 'smenu:read:local_u' })
+
+    expect(dot(await pane.drawn(), 'local_u')).toBe('Idle')
+  })
+
+  test('opening an unread session marks it read', async ($, on) => {
+    const { opened } = world(on, { rows: [session('local_u', 'D:\\Projects\\shop', '2026-10-16T11:40:00Z')], files: UNREAD })
+    await pin($, 'D:\\Projects\\shop')
+    const pane = await mountPane($, 'desktop')
+    expect(dot(await pane.drawn(), 'local_u')).toBe('Unread')
+
+    await pane.press({ key: 'session:local_u' })
+
+    expect(opened.flat().join(' ')).toContain('local_u')
+    expect(dot(await pane.drawn(), 'local_u')).toBe('Idle')
+  })
+
+  test('the menu of a pinned folder marks its unread sessions read', async ($, on) => {
+    world(on, { rows: [session('local_u', 'D:\\Projects\\shop', '2026-10-16T11:40:00Z')], files: UNREAD })
+    await pin($, 'D:\\Projects\\shop')
+    const pane = await mountPane($, 'desktop')
+
+    await pane.press({ key: 'more:d:\\projects\\shop' })
+    await pane.press({ key: 'menu:readall:d:\\projects\\shop' })
+
+    expect(dot(await pane.drawn(), 'local_u')).toBe('Idle')
+  })
+
+  test('a folder that is not pinned has a menu too, with no pin actions', async ($, on) => {
+    world(on, { rows: [session('local_u', 'D:\\Other', '2026-10-16T11:40:00Z')], files: UNREAD })
+    await pin($, 'D:\\Projects\\shop')
+    const pane = await mountPane($, 'desktop')
+
+    await pane.press({ key: 'more:d:\\other' })
+    const drawn = await pane.drawn()
+
+    expect(nodeIn(drawn, keyed('menu:readall:d:\\other'))).toBeDefined()
+    expect(nodeIn(drawn, keyed('menu:unpin:d:\\other'))).toBeUndefined()
+    await pane.press({ key: 'menu:readall:d:\\other' })
+    expect(dot(await pane.drawn(), 'local_u')).toBe('Idle')
+  })
+})
+
 describe('the Recent section', () => {
   test('lists the five latest sessions of any project, the latest first', async ($, on) => {
     const rows = [

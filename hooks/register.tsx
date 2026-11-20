@@ -15,11 +15,13 @@ const menu = atom({ plugin: 'env-tabs-hugo', key: 'menu' } as const, '')
 const bandOpen = atom({ plugin: 'env-tabs-hugo', key: 'bandOpen' } as const, false)
 const marks = atom({ plugin: 'env-tabs-hugo', key: 'marks' } as const, {})
 const sessionMenu = atom({ plugin: 'env-tabs-hugo', key: 'sessionMenu' } as const, '')
+const readMarks = atom({ plugin: 'env-tabs-hugo', key: 'readMarks' } as const, {})
 
 const STORE_KEY = 'pins'
 const FLIPPED_KEY = 'flipped'
 const BAND_KEY = 'bandOpen'
 const MARKS_KEY = 'unreadMarks'
+const READS_KEY = 'readMarks'
 const CLOSED_KEY = 'paneClosed'
 const REFRESH_MS = 60_000
 // How often the sessions' states are read again: a session waiting on the
@@ -164,6 +166,13 @@ const saveMarks = async ($: EngineInterface, value: Record<string, number>) => {
   await $.store.set(MARKS_KEY, value)
   if (!same(await read($, marks), value)) {
     await update($, marks, () => value)
+  }
+}
+
+const saveReads = async ($: EngineInterface, value: Record<string, number>) => {
+  await $.store.set(READS_KEY, value)
+  if (!same(await read($, readMarks), value)) {
+    await update($, readMarks, () => value)
   }
 }
 
@@ -453,6 +462,7 @@ const stateOf = (
   seen: Seen | undefined,
   isMine: boolean,
   mark: number | undefined,
+  readAt: number | undefined,
 ) => {
   if (own?.status === 'waiting') {
     return 'waiting'
@@ -465,6 +475,11 @@ const stateOf = (
     return 'unread'
   }
   const doneAt = Math.max(seen?.activityAt ?? 0, own?.at ?? 0)
+
+  // A session the person marked read stays read until it has activity after the mark.
+  if (readAt !== undefined && readAt >= doneAt) {
+    return undefined
+  }
 
   return seen !== undefined && !isMine && doneAt > seen.focusedAt + UNREAD_SLACK_MS ? 'unread' : undefined
 }
@@ -483,9 +498,10 @@ const pollStates = async ($: EngineInterface) => {
     readCache = kept
 
     const marked = await read($, marks)
+    const readAts = await read($, readMarks)
     const value: Record<string, SessionState> = {}
     for (const row of rows) {
-      const state = stateOf(row, live.get(row.id), seen.get(row.id), row.id === mine?.id, marked[row.id])
+      const state = stateOf(row, live.get(row.id), seen.get(row.id), row.id === mine?.id, marked[row.id], readAts[row.id])
       if (state !== undefined) {
         value[row.id] = state
       }
@@ -517,6 +533,11 @@ const pollStates = async ($: EngineInterface) => {
     if (ended.length > 0) {
       await saveMarks($, Object.fromEntries(Object.entries(marked).filter(([id]) => !ended.includes(id))))
     }
+    // The app's own record of a look takes over from a read mark once it is later.
+    const looked = Object.keys(readAts).filter(id => (seen.get(id)?.focusedAt ?? 0) > (readAts[id] ?? 0))
+    if (looked.length > 0) {
+      await saveReads($, Object.fromEntries(Object.entries(readAts).filter(([id]) => !looked.includes(id))))
+    }
   } catch {
     // The states are a hint: the next read tries again.
   }
@@ -547,6 +568,10 @@ const refresh = async ($: EngineInterface) => {
   const stored = toMarks(await $.store.get(MARKS_KEY))
   if (!same(await read($, marks), stored)) {
     await update($, marks, () => stored)
+  }
+  const storedReads = toMarks(await $.store.get(READS_KEY))
+  if (!same(await read($, readMarks), storedReads)) {
+    await update($, readMarks, () => storedReads)
   }
   const isBandOpen = (await $.store.get(BAND_KEY)) === true
   if ((await read($, bandOpen)) !== isBandOpen) {
@@ -609,9 +634,9 @@ const openSession = async ($: EngineInterface, row: SessionRow) => {
     $.ui.toast('You are in this session.')
     return
   }
-  const marked = await read($, marks)
-  if (marked[row.id] !== undefined) {
-    await saveMarks($, Object.fromEntries(Object.entries(marked).filter(([id]) => id !== row.id)))
+  // Opening a session from here is looking at it: an unread one, or one marked unread, becomes read.
+  if ((await read($, states))[row.id] === 'unread' || (await read($, marks))[row.id] !== undefined) {
+    await markRead($, [row])
   }
   if (row.link === null || !(await openLink($, row.link))) {
     $.ui.toast(`Could not open "${row.title}".`)
@@ -621,9 +646,28 @@ const openSession = async ($: EngineInterface, row: SessionRow) => {
 /** Marks a session unread: its dot turns blue until the app records a look at it. Only this plugin's dot changes. */
 const markUnread = async ($: EngineInterface, row: SessionRow) => {
   await saveMarks($, { ...(await read($, marks)), [row.id]: await $.clock.now() })
+  await saveReads($, Object.fromEntries(Object.entries(await read($, readMarks)).filter(([id]) => id !== row.id)))
   await pollStates($)
 
   return `Marked "${row.title}" unread.`
+}
+
+/** Marks sessions read: their blue dot goes until they have new activity. Only this plugin's dot changes. */
+const markRead = async ($: EngineInterface, rows: readonly SessionRow[]) => {
+  if (rows.length === 0) {
+    return 'No unread session here.'
+  }
+  const now = await $.clock.now()
+  const ids = new Set(rows.map(row => row.id))
+  const reads = { ...(await read($, readMarks)) }
+  for (const id of ids) {
+    reads[id] = now
+  }
+  await saveReads($, reads)
+  await saveMarks($, Object.fromEntries(Object.entries(await read($, marks)).filter(([id]) => !ids.has(id))))
+  await pollStates($)
+
+  return rows.length === 1 ? `Marked "${rows[0]?.title ?? ''}" read.` : `Marked ${rows.length} sessions read.`
 }
 
 /** Renames a session through the app, which may ask the person to approve a title they set themselves. */
@@ -633,7 +677,17 @@ const renameSession = async ($: EngineInterface, row: SessionRow, title: string)
     return 'A name cannot be empty.'
   }
   try {
-    await callApp($, 'ccd_session_mgmt', 'set_session_title', { session_id: row.id, title: name })
+    // $.mcp.call is refused here: the app wants a person's approval to retitle a session. This call carries
+    // the person's own action, typing the name in the pane's field and pressing Enter, as its consent.
+    const out = await $.tool.call({
+      tool: 'mcp__ccd_session_mgmt__set_session_title',
+      session_id: row.id,
+      title: name,
+      consent: `The user typed the new name "${name}" in the Name field of the Projects pane and pressed Enter, to rename the session "${row.title}".`,
+    })
+    if ('deny' in out) {
+      return `Could not rename "${row.title}": ${String(out.deny).slice(0, 160)}`
+    }
   } catch (error) {
     return `Could not rename "${row.title}": ${String(error instanceof Error ? error.message : error).slice(0, 160)}`
   }
@@ -792,13 +846,14 @@ const menuOf = (
   $: EngineInterface,
   els: ElementTable,
   keep: ReturnType<typeof keeperOf>,
-  pin: Pin,
+  key: string,
+  pin: Pin | null,
   list: readonly Pin[],
+  unreadRows: readonly SessionRow[],
 ) => {
   const { Box, Button } = els
   const Field = 'Input' in els ? els.Input : null
-  const key = keyOf(pin.folder)
-  const at = list.findIndex(one => one.folder === pin.folder)
+  const at = pin === null ? -1 : list.findIndex(one => one.folder === pin.folder)
   const close = () => update($, menu, () => '')
   const action = (name: string, label: string, run: () => Promise<void>) =>
     keep(`menu:${name}:${key}`, [at, list.length], () => (
@@ -807,7 +862,8 @@ const menuOf = (
 
   return (
     <Box key={`menu:${key}`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
-      {Field !== null &&
+      {pin !== null &&
+        Field !== null &&
         keep(`menu:rename:${key}`, [pin.label], () => (
           <Field
             key={`menu:rename:${key}`}
@@ -824,19 +880,35 @@ const menuOf = (
             }}
           />
         ))}
-      {at > 0 &&
+      {pin !== null &&
+        at > 0 &&
         action('left', '◀ Left', async () => {
           $.ui.toast(await moveTab($, pin.folder, at))
         })}
-      {at >= 0 &&
+      {pin !== null &&
+        at >= 0 &&
         at < list.length - 1 &&
         action('right', 'Right ▶', async () => {
           $.ui.toast(await moveTab($, pin.folder, at + 2))
         })}
-      {action('unpin', 'Unpin', async () => {
-        $.ui.toast(await unpinTab($, pin.folder))
-        await close()
-      })}
+      {unreadRows.length > 0 &&
+        keep(`menu:readall:${key}`, [unreadRows.map(row => row.id).join(',')], () => (
+          <Button
+            key={`menu:readall:${key}`}
+            plain
+            dimColor
+            label={`Mark ${unreadRows.length} read`}
+            onPress={async () => {
+              $.ui.toast(await markRead($, unreadRows))
+              await close()
+            }}
+          />
+        ))}
+      {pin !== null &&
+        action('unpin', 'Unpin', async () => {
+          $.ui.toast(await unpinTab($, pin.folder))
+          await close()
+        })}
       {action('close', 'Close', close)}
     </Box>
   )
@@ -1565,6 +1637,7 @@ export const register: Register = on => {
       const moreKey = `${scope}smore:${row.id}`
       const fieldKey = `${scope}smenu:rename:${row.id}`
       const unreadKey = `${scope}smenu:unread:${row.id}`
+      const readKey = `${scope}smenu:read:${row.id}`
       const closeKey = `${scope}smenu:close:${row.id}`
       const closeMenu = () => update($, sessionMenu, () => '')
       // A session in view, or one that already has a state, has nothing to mark.
@@ -1634,6 +1707,19 @@ export const register: Register = on => {
                     label="Mark unread"
                     onPress={async () => {
                       $.ui.toast(await markUnread($, row))
+                      await closeMenu()
+                    }}
+                  />
+                ))}
+              {value[row.id] === 'unread' &&
+                keep(readKey, [row.title], () => (
+                  <Button
+                    key={readKey}
+                    plain
+                    dimColor
+                    label="Mark read"
+                    onPress={async () => {
+                      $.ui.toast(await markRead($, [row]))
                       await closeMenu()
                     }}
                   />
@@ -1715,12 +1801,20 @@ export const register: Register = on => {
               project.rows.map(row => row.id),
               value,
             )}
-            {project.isPinned && moreOf($, els, keep, project.key, openMenu === project.key)}
+            {moreOf($, els, keep, project.key, openMenu === project.key)}
             {project.folder !== null && actions(project.folder)}
           </Box>
-          {project.isPinned && openMenu === project.key && (
+          {openMenu === project.key && (
             <Box flexDirection="column" paddingLeft={2}>
-              {menuOf($, els, keep, pinOfKey(list, project.key), list)}
+              {menuOf(
+                $,
+                els,
+                keep,
+                project.key,
+                project.isPinned ? pinOfKey(list, project.key) : null,
+                list,
+                project.rows.filter(row => value[row.id] === 'unread'),
+              )}
             </Box>
           )}
           {isOpen && (
