@@ -10,6 +10,8 @@ const here = atom({ plugin: 'env-tabs', key: 'here' } as const, '')
 const flipped = atom({ plugin: 'env-tabs', key: 'flipped' } as const, [])
 const states = atom({ plugin: 'env-tabs', key: 'states' } as const, {})
 const probe = atom({ plugin: 'env-tabs', key: 'probe' } as const, null)
+const filter = atom({ plugin: 'env-tabs', key: 'filter' } as const, '')
+const menu = atom({ plugin: 'env-tabs', key: 'menu' } as const, '')
 
 const STORE_KEY = 'pins'
 const FLIPPED_KEY = 'flipped'
@@ -27,14 +29,17 @@ const PANE = 'projects'
 const PANE_TITLE = 'Projects'
 // The most sessions an open project lists in the pane.
 const SHOWN = 5
+// The most sessions the Active section lists.
+const ACTIVE_SHOWN = 15
 
 const HELP = [
-  'Usage: /env-tabs [list | pin [folder] | unpin <n> | move <n> <to> | rename <n> <label> | panel | status]',
+  'Usage: /env-tabs [list | pin [folder] | unpin <n> | move <n> <to> | rename <n> <label> | panel | next | status]',
   "  pin     pins this session's project (or the folder given): a tab, and a place at the top of the Projects pane",
   '  unpin   removes tab <n> (or the tab with that label)',
   '  move    moves tab <n> to position <to>',
   '  rename  sets the label of tab <n>',
   '  panel   opens the Projects pane: the pinned projects first, then the rest, each with its sessions',
+  '  next    opens the session that needs you: one waiting first, else one unread',
   '  status  shows what the tabs see',
 ].join('\n')
 
@@ -74,6 +79,8 @@ const keyOf = (folder: string) =>
   isScratch(folder) ? SCRATCH_KEY : normalize(projectFolder(folder))
 
 /** The pin of a folder's project; a scratch folder has none. */
+const pinOfKey = (list: readonly Pin[], key: string) => list.find(pin => keyOf(pin.folder) === key) as Pin
+
 const pinOf = (folder: string, list: readonly Pin[]) =>
   isScratch(folder) ? undefined : list.find(pin => keyOf(pin.folder) === keyOf(folder))
 
@@ -532,6 +539,188 @@ const goTo = async ($: EngineInterface, target: Pin) => {
     return
   }
   await openSession($, latest)
+}
+
+// What is running or needs the person, across every project: the counter in
+// the band, the Active section of the pane, and the next session to go to.
+
+/** Waiting sessions first, then running, then unread. */
+const STATE_ORDER: Record<SessionState, number> = { waiting: 0, running: 1, unread: 2 }
+
+/** The sessions that have a state, in that order and the latest first within one. */
+const activeOf = (rows: readonly SessionRow[], value: Readonly<Record<string, SessionState>>) =>
+  rows
+    .filter(row => value[row.id] !== undefined)
+    .sort(
+      (a, b) =>
+        STATE_ORDER[value[a.id] as SessionState] - STATE_ORDER[value[b.id] as SessionState] ||
+        b.lastActivityAt.localeCompare(a.lastActivityAt),
+    )
+
+const countsOf = (rows: readonly SessionRow[], value: Readonly<Record<string, SessionState>>) => {
+  const counts: Record<SessionState, number> = { waiting: 0, running: 0, unread: 0 }
+  for (const row of rows) {
+    const state = value[row.id]
+    if (state !== undefined) {
+      counts[state] += 1
+    }
+  }
+
+  return counts
+}
+
+const summaryOf = (counts: Readonly<Record<SessionState, number>>) =>
+  (['waiting', 'running', 'unread'] as const)
+    .filter(state => counts[state] > 0)
+    .map(state => `${counts[state]} ${state}`)
+    .join(' · ')
+
+/** Whether a session fits what the person typed in the pane's filter, in lower case. */
+const fits = (row: SessionRow, term: string) =>
+  term === '' || `${row.title}
+${row.folder}`.toLowerCase().includes(term)
+
+/** Opens the latest session that waits for the person, else the latest unread one; this session is left out. */
+const nextNeeding = async ($: EngineInterface) => {
+  const mine = await read($, thisSession)
+  const value = await read($, states)
+  const target = activeOf(
+    (await read($, sessions)).filter(row => row.id !== mine?.id),
+    value,
+  ).find(row => value[row.id] === 'waiting' || value[row.id] === 'unread')
+  if (target === undefined) {
+    return 'No other session needs you.'
+  }
+  await openSession($, target)
+
+  return ''
+}
+
+type Activity = { counts: Record<SessionState, number>; need: number }
+
+/** What the band says of activity, read before a drawing takes its keeper. */
+const readActivity = async ($: EngineInterface): Promise<Activity> => {
+  const mine = await read($, thisSession)
+  const others = await read($, sessions)
+  const value = await read($, states)
+  const rows = mine === null ? others : [mine, ...others.filter(row => row.id !== mine.id)]
+
+  return {
+    counts: countsOf(rows, value),
+    need: others.filter(row => value[row.id] === 'waiting' || value[row.id] === 'unread').length,
+  }
+}
+
+/** The band's part about activity: the counter and the button to the next session that needs the person; null when nothing runs. */
+const activityOf = (
+  $: EngineInterface,
+  els: ElementTable,
+  keep: ReturnType<typeof keeperOf>,
+  { counts, need }: Activity,
+) => {
+  const { Box, Button, Text } = els
+  const summary = summaryOf(counts)
+  if (summary === '') {
+    return null
+  }
+  const tone = counts.waiting > 0 ? 'waiting' : counts.unread > 0 ? 'unread' : 'running'
+
+  return (
+    <Box flexDirection="row" alignItems="center" columnGap={1}>
+      <Text color={STATE_THEME[tone]}>{summary}</Text>
+      {need > 0 &&
+        keep('next', [need], () => (
+          <Button
+            key="next"
+            plain
+            dimColor
+            label="Next ›"
+            onPress={async () => {
+              const said = await nextNeeding($)
+              if (said !== '') {
+                $.ui.toast(said)
+              }
+            }}
+          />
+        ))}
+    </Box>
+  )
+}
+
+// The actions menu of a pinned project, opened by its ⋯ button: a row that
+// renames, moves or unpins it. The app gives a mod no right-click menu.
+
+/** The ⋯ button that opens or closes a pin's actions. */
+const moreOf = ($: EngineInterface, els: ElementTable, keep: ReturnType<typeof keeperOf>, key: string, isOpen: boolean) => {
+  const { Button } = els
+
+  return keep(`more:${key}`, [isOpen], () => (
+    <Button
+      key={`more:${key}`}
+      plain
+      dimColor={!isOpen}
+      label="⋯"
+      onPress={async () => {
+        const open = await read($, menu)
+        await update($, menu, () => (open === key ? '' : key))
+      }}
+    />
+  ))
+}
+
+/** A pin's actions row: its name in a field, move left or right, unpin, close. */
+const menuOf = (
+  $: EngineInterface,
+  els: ElementTable,
+  keep: ReturnType<typeof keeperOf>,
+  pin: Pin,
+  list: readonly Pin[],
+) => {
+  const { Box, Button } = els
+  const Field = 'Input' in els ? els.Input : null
+  const key = keyOf(pin.folder)
+  const at = list.findIndex(one => one.folder === pin.folder)
+  const close = () => update($, menu, () => '')
+  const action = (name: string, label: string, run: () => Promise<void>) =>
+    keep(`menu:${name}:${key}`, [at, list.length], () => (
+      <Button key={`menu:${name}:${key}`} plain dimColor label={label} onPress={run} />
+    ))
+
+  return (
+    <Box key={`menu:${key}`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
+      {Field !== null &&
+        keep(`menu:rename:${key}`, [pin.label], () => (
+          <Field
+            key={`menu:rename:${key}`}
+            label="Name"
+            value={pin.label}
+            submitLabel="rename"
+            onSubmit={async (text: string) => {
+              if (text.trim() === '') {
+                $.ui.toast('A name cannot be empty.')
+                return
+              }
+              $.ui.toast(await renameTab($, pin.folder, text))
+              await close()
+            }}
+          />
+        ))}
+      {at > 0 &&
+        action('left', '◀ Left', async () => {
+          $.ui.toast(await moveTab($, pin.folder, at))
+        })}
+      {at >= 0 &&
+        at < list.length - 1 &&
+        action('right', 'Right ▶', async () => {
+          $.ui.toast(await moveTab($, pin.folder, at + 2))
+        })}
+      {action('unpin', 'Unpin', async () => {
+        $.ui.toast(await unpinTab($, pin.folder))
+        await close()
+      })}
+      {action('close', 'Close', close)}
+    </Box>
+  )
 }
 
 // The Projects pane: the pinned projects in the order of their tabs, then the
@@ -998,6 +1187,8 @@ const runCommand = async ($: EngineInterface, args: string) => {
     }
     case 'panel':
       return (await showPane($)) || 'The Projects pane is open.'
+    case 'next':
+      return (await nextNeeding($)) || 'Opened the next session that needs you.'
     case 'status':
       return status($)
     default:
@@ -1033,6 +1224,8 @@ const runTool = async ($: EngineInterface, input: ToolInput) => {
         : 'Name the tab and its new label.'
     case 'panel':
       return (await showPane($)) || 'The Projects pane is open.'
+    case 'next':
+      return (await nextNeeding($)) || 'Opened the next session that needs you.'
     default:
       return status($)
   }
@@ -1043,7 +1236,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'env-tabs',
       description: 'Pinned projects as tabs above the prompt and at the top of a Projects pane',
-      argumentHint: '[list|pin|unpin|move|rename|panel|status]',
+      argumentHint: '[list|pin|unpin|move|rename|panel|next|status]',
     })
     await $.tool.register({
       name: 'tabs',
@@ -1051,13 +1244,13 @@ export const register: Register = on => {
         "Reads and changes env-tabs: pinned projects (folders), each drawn as a tab above the prompt in Claude Desktop's Code tab " +
         'and kept at the top of its Projects pane, which lists every recent project with its sessions. ' +
         'action "status" lists the pins and what they see; "pin" pins a folder (this session\'s project when none is given); ' +
-        '"unpin", "move" and "rename" take a tab by its 1-based number or its label; "panel" opens the Projects pane.',
+        '"unpin", "move" and "rename" take a tab by its 1-based number or its label; "panel" opens the Projects pane; "next" opens the session that waits for the person, else an unread one.',
       inputSchema: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['status', 'pin', 'unpin', 'move', 'rename', 'panel'],
+            enum: ['status', 'pin', 'unpin', 'move', 'rename', 'panel', 'next'],
           },
           folder: { type: 'string', description: 'The absolute folder to pin (pin only).' },
           tab: { type: 'string', description: 'The tab: its 1-based number or its label.' },
@@ -1112,8 +1305,11 @@ export const register: Register = on => {
     // A session with no folder has no project to show, but the Projects button
     // still opens the pane from here.
     if (folder === '') {
-      const { Box, Button } = $.ui.resolve(e)
+      const aloneEls = $.ui.resolve(e)
+      const { Box, Button } = aloneEls
+      const aloneState = await readActivity($)
       const keepAlone = keeperOf(e)
+      const aloneActivity = activityOf($, aloneEls, keepAlone, aloneState)
 
       return (
         <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
@@ -1131,6 +1327,7 @@ export const register: Register = on => {
               }}
             />
           ))}
+          {aloneActivity}
         </Box>
       )
     }
@@ -1143,8 +1340,11 @@ export const register: Register = on => {
     const current = pinOf(folder, list)
     const els = $.ui.resolve(e)
     const { Box, Button } = els
+    const activityState = await readActivity($)
+    const openMenu = await read($, menu)
     const keep = keeperOf(e)
     const quiet = quietOf(e.surface)
+    const activity = activityOf($, els, keep, activityState)
 
     return (
       <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>
@@ -1174,6 +1374,8 @@ export const register: Register = on => {
                 />
               ))}
               {markOf(els, e.surface, ids, value)}
+              {moreOf($, els, keep, keyOf(pin.folder), openMenu === keyOf(pin.folder))}
+              {openMenu === keyOf(pin.folder) && menuOf($, els, keep, pin, list)}
             </Box>
           )
         })}
@@ -1201,6 +1403,7 @@ export const register: Register = on => {
             }}
           />
         ))}
+        {activity}
       </Box>
     )
   })
@@ -1208,6 +1411,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Button, Text } = els
+    const Field = 'Input' in els ? els.Input : null
     const list = await read($, pins)
     const mine = await read($, thisSession)
     const others = await read($, sessions)
@@ -1215,12 +1419,24 @@ export const register: Register = on => {
     const flips = await read($, flipped)
     const value = await read($, states)
     const last = await read($, probe)
+    const term = (await read($, filter)).trim().toLowerCase()
+    const openMenu = await read($, menu)
     const now = last?.at ?? 0
     const room = Math.max(8, e.props.bodyColumns - 10)
     // A project's row also holds its + New and Pin or Unpin buttons.
     const labelRoom = Math.max(8, e.props.bodyColumns - 18)
     const rows = mine === null ? others : [mine, ...others.filter(row => row.id !== mine.id)]
-    const { pinned, rest } = projectsOf(list, rows)
+    const matching = rows.filter(row => fits(row, term))
+    const projects = projectsOf(list, matching)
+    // A filter keeps the projects whose name fits it or that hold a session that does.
+    const keepProject = (project: Project) =>
+      term === '' || project.rows.length > 0 || project.label.toLowerCase().includes(term)
+    const pinned = projects.pinned.filter(keepProject)
+    const rest = projects.rest.filter(keepProject)
+    const active = activeOf(matching, value)
+    const projectName = (row: SessionRow) =>
+      pinOf(row.folder, list)?.label ??
+      (isScratch(row.folder) ? SCRATCH_LABEL : baseName(projectFolder(row.folder)))
     const current = folder === '' ? '' : keyOf(folder)
     const keep = keeperOf(e)
     const quiet = quietOf(e.surface)
@@ -1229,14 +1445,15 @@ export const register: Register = on => {
 
     // A session's age stands at the end of its row, outside its button: the
     // button stays as it was while the age moves on.
-    const sessionRow = (row: SessionRow) => {
-      const key = `session:${row.id}`
-      const title = clip(row.title || 'Untitled session', room)
+    // The Active section lists a session that its project lists as well, so its keys have their own prefix.
+    const sessionRow = (row: SessionRow, scope = '') => {
+      const key = `${scope}session:${row.id}`
+      const title = clip(row.title || 'Untitled session', scope === '' ? room : Math.max(8, room - 12))
       const when = row.id === mine?.id ? 'here' : ago(row.lastActivityAt, now)
 
       return (
         <Box
-          key={`srow:${row.id}`}
+          key={`${scope}srow:${row.id}`}
           flexDirection="row"
           alignItems="center"
           columnGap={1}
@@ -1250,6 +1467,7 @@ export const register: Register = on => {
               </Button>
             ))}
           </Box>
+          {scope !== '' && <Text dimColor>{clip(projectName(row), 12)}</Text>}
           <Text dimColor tabular>
             {when}
           </Text>
@@ -1258,7 +1476,7 @@ export const register: Register = on => {
     }
 
     const projectRow = (project: Project) => {
-      const isOpen = project.isPinned !== flips.includes(project.key)
+      const isOpen = term !== '' || project.isPinned !== flips.includes(project.key)
       const isCurrent = project.key === current
       const label = clip(project.label, labelRoom)
       const hidden = project.rows.length - SHOWN
@@ -1325,12 +1543,18 @@ export const register: Register = on => {
               project.rows.map(row => row.id),
               value,
             )}
+            {project.isPinned && moreOf($, els, keep, project.key, openMenu === project.key)}
             {project.folder !== null && actions(project.folder)}
           </Box>
+          {project.isPinned && openMenu === project.key && (
+            <Box flexDirection="column" paddingLeft={2}>
+              {menuOf($, els, keep, pinOfKey(list, project.key), list)}
+            </Box>
+          )}
           {isOpen && (
             <Box flexDirection="column" paddingLeft={2}>
               {project.rows.length === 0 && <Text dimColor>No recent sessions</Text>}
-              {project.rows.slice(0, SHOWN).map(sessionRow)}
+              {project.rows.slice(0, SHOWN).map(row => sessionRow(row))}
               {hidden > 0 && <Text dimColor>+{hidden} more</Text>}
             </Box>
           )}
@@ -1338,13 +1562,37 @@ export const register: Register = on => {
       )
     }
 
+    const activeHidden = active.length - ACTIVE_SHOWN
+
     return (
       <Box flexDirection="column" rowGap={1}>
+        {Field !== null &&
+          keep('filter', [], () => (
+            <Field
+              key="filter"
+              placeholder="Filter by name or folder"
+              onInput={(text: string) => {
+                void update($, filter, () => text)
+              }}
+              onSubmit={() => undefined}
+            />
+          ))}
+        {active.length > 0 && (
+          <Box flexDirection="column">
+            <Text dimColor size="caption" weight="medium">
+              Active · {summaryOf(countsOf(matching, value))}
+            </Text>
+            {active.slice(0, ACTIVE_SHOWN).map(row => sessionRow(row, 'active:'))}
+            {activeHidden > 0 && <Text dimColor>+{activeHidden} more</Text>}
+          </Box>
+        )}
         <Box flexDirection="column">
           <Text dimColor size="caption" weight="medium">
             Pinned
           </Text>
-          {pinned.length === 0 && <Text dimColor>Pin a project to keep it here.</Text>}
+          {pinned.length === 0 && (
+            <Text dimColor>{term === '' ? 'Pin a project to keep it here.' : 'No pinned project fits.'}</Text>
+          )}
           {pinned.map(projectRow)}
         </Box>
         {rest.length > 0 && (

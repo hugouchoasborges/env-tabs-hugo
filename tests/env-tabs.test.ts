@@ -734,6 +734,97 @@ describe('the Projects pane', () => {
   })
 })
 
+describe('the actions menu', () => {
+  test("the ⋯ button opens a pin's actions, and Right moves its tab", async ($, on) => {
+    world(on, { rows: [] })
+    await pin($, 'D:\\Projects\\shop')
+    await pin($, 'D:\\Other')
+    const pane = await mountPane($, 'desktop')
+
+    await pane.press({ key: 'more:d:\\projects\\shop' })
+    expect(nodeIn(await pane.drawn(), keyed('menu:unpin:d:\\projects\\shop'))).toBeDefined()
+
+    await pane.press({ key: 'menu:right:d:\\projects\\shop' })
+    expect(await statusOf($)).toMatch(/1\. Other[\s\S]*2\. shop/)
+  })
+
+  test('Unpin in the menu removes the tab', async ($, on) => {
+    world(on, { rows: [] })
+    await pin($, 'D:\\Projects\\shop')
+    const pane = await mountPane($, 'desktop')
+
+    await pane.press({ key: 'more:d:\\projects\\shop' })
+    await pane.press({ key: 'menu:unpin:d:\\projects\\shop' })
+
+    expect(await statusOf($)).toMatch(/No pinned folders/)
+  })
+})
+
+describe('activity across projects', () => {
+  const AT = NOW - 3_600_000
+  const ROWS = [
+    session('local_w', 'D:\Projects\shop', '2026-10-16T11:50:00Z'),
+    session('local_u', 'D:\Projects\shop', '2026-10-16T11:40:00Z'),
+    session('local_r', 'D:\Projects\shop', '2026-10-16T11:30:00Z'),
+    session('local_i', 'D:\Projects\shop', '2026-10-16T11:20:00Z'),
+    session('local_o', 'D:\Other', '2026-10-16T11:10:00Z'),
+  ]
+  const FILES = {
+    ...live(1, 'local_w', 'waiting', AT),
+    ...live(2, 'local_r', 'busy', AT),
+    ...live(3, 'local_o', 'busy', AT),
+    ...record('local_w', AT - 10_000, AT),
+    ...record('local_u', AT - 60_000, AT),
+    ...record('local_i', AT, AT - 60_000),
+  }
+  const SUMMARY = '1 waiting · 2 running · 1 unread'
+
+  test('the band counts what waits, runs and is unread, whatever the project', async ($, on) => {
+    world(on, { rows: ROWS, files: FILES })
+    await pin($, 'D:\Projects\shop')
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: BAND })
+
+    expect(await band.find({ type: 'Text', text: SUMMARY })).toBeDefined()
+    expect(await band.find({ key: 'next' })).toBeDefined()
+  })
+
+  test('a session with no folder gets the counter too', async ($, on) => {
+    world(on, { rows: ROWS, files: FILES, root: '' })
+    await pin($, 'D:\Projects\shop')
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: BAND })
+
+    expect(await band.find({ type: 'Text', text: SUMMARY })).toBeDefined()
+  })
+
+  test('the Active section lists waiting sessions first, then running, then unread', async ($, on) => {
+    world(on, { rows: ROWS, files: FILES })
+    await pin($, 'D:\Projects\shop')
+    const pane = await mountPane($, 'desktop')
+
+    const order = (await pane.findAll({ type: 'Button' }))
+      .map(button => button.key ?? '')
+      .filter(key => key.startsWith('active:session:'))
+
+    expect(order).toEqual([
+      'active:session:local_w',
+      'active:session:local_r',
+      'active:session:local_o',
+      'active:session:local_u',
+    ])
+    // The same sessions are still listed under their projects.
+    expect(await pane.find({ key: 'session:local_w' })).toBeDefined()
+  })
+
+  test('next opens the session that waits for you', async ($, on) => {
+    const { opened } = world(on, { rows: ROWS, files: FILES })
+    await pin($, 'D:\Projects\shop')
+
+    await $.tool.call({ tool: TOOL, action: 'next' })
+
+    expect(opened.flat().join(' ')).toContain('local_w')
+  })
+})
+
 describe('session states', () => {
   const AT = NOW - 3_600_000
   const ROWS = [

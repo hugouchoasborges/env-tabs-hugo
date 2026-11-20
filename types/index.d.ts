@@ -47,6 +47,10 @@ declare module 'claude-code' {
       /** Each listed session's state, by its id; an idle session is left out. */
       states: Record<string, SessionState>
       probe: Probe | null
+      /** What the person typed in the pane's filter. */
+      filter: string
+      /** The key of the pinned project whose actions menu is open, or an empty text. */
+      menu: string
     }
   }
 }
