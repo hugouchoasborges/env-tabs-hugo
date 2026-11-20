@@ -13,10 +13,13 @@ const probe = atom({ plugin: 'env-tabs-hugo', key: 'probe' } as const, null)
 const filter = atom({ plugin: 'env-tabs-hugo', key: 'filter' } as const, '')
 const menu = atom({ plugin: 'env-tabs-hugo', key: 'menu' } as const, '')
 const bandOpen = atom({ plugin: 'env-tabs-hugo', key: 'bandOpen' } as const, false)
+const marks = atom({ plugin: 'env-tabs-hugo', key: 'marks' } as const, {})
+const sessionMenu = atom({ plugin: 'env-tabs-hugo', key: 'sessionMenu' } as const, '')
 
 const STORE_KEY = 'pins'
 const FLIPPED_KEY = 'flipped'
 const BAND_KEY = 'bandOpen'
+const MARKS_KEY = 'unreadMarks'
 const CLOSED_KEY = 'paneClosed'
 const REFRESH_MS = 60_000
 // How often the sessions' states are read again: a session waiting on the
@@ -141,6 +144,27 @@ const toPins = (value: unknown): Pin[] => {
       ? [{ folder: pin.folder, label: pin.label }]
       : []
   })
+}
+
+/** The sessions the person marked unread, by id, with the time of the mark. */
+const toMarks = (value: unknown): Record<string, number> => {
+  const out: Record<string, number> = {}
+  if (typeof value === 'object' && value !== null) {
+    for (const [id, at] of Object.entries(value)) {
+      if (typeof at === 'number' && Number.isFinite(at)) {
+        out[id] = at
+      }
+    }
+  }
+
+  return out
+}
+
+const saveMarks = async ($: EngineInterface, value: Record<string, number>) => {
+  await $.store.set(MARKS_KEY, value)
+  if (!same(await read($, marks), value)) {
+    await update($, marks, () => value)
+  }
 }
 
 const toKeys = (value: unknown): string[] =>
@@ -330,6 +354,14 @@ const recordsDirOf = async ($: EngineInterface) => {
         return dir
       }
     }
+    // The packaged app keeps its data beside the package, in Claude-Data/claude_<id>/claude-code-sessions.
+    const claudeData = localAppData ? join(localAppData, 'Claude-Data') : null
+    for (const entry of claudeData === null ? [] : await $.fs.list(claudeData).catch(() => [])) {
+      const dir = join(claudeData ?? '', entry.name, tail[1] ?? '')
+      if (entry.kind === 'dir' && (await isDir($, dir))) {
+        return dir
+      }
+    }
     return null
   }
   const home = await homeOf($)
@@ -412,12 +444,22 @@ const readSeen = async (
 }
 
 /** A session's state from its own file and its record; this session is never unread, it is in view. */
-const stateOf = (row: SessionRow, own: Live | undefined, seen: Seen | undefined, isMine: boolean) => {
+const stateOf = (
+  row: SessionRow,
+  own: Live | undefined,
+  seen: Seen | undefined,
+  isMine: boolean,
+  mark: number | undefined,
+) => {
   if (own?.status === 'waiting') {
     return 'waiting'
   }
   if (own?.status === 'busy' || (own === undefined && row.isRunning)) {
     return 'running'
+  }
+  // A session the person marked unread stays so until the app records a look at it after the mark.
+  if (mark !== undefined && !isMine && (seen === undefined || seen.focusedAt <= mark)) {
+    return 'unread'
   }
   const doneAt = Math.max(seen?.activityAt ?? 0, own?.at ?? 0)
 
@@ -437,14 +479,23 @@ const pollStates = async ($: EngineInterface) => {
     const seen = sources.records === null ? new Map<string, Seen>() : await readSeen($, sources.records, wanted, kept)
     readCache = kept
 
+    const marked = await read($, marks)
     const value: Record<string, SessionState> = {}
     for (const row of rows) {
-      const state = stateOf(row, live.get(row.id), seen.get(row.id), row.id === mine?.id)
+      const state = stateOf(row, live.get(row.id), seen.get(row.id), row.id === mine?.id, marked[row.id])
       if (state !== undefined) {
         value[row.id] = state
       }
     }
     await setStates($, value)
+    // A mark ends once the app records a look at the session after it.
+    const ended = Object.keys(marked).filter(id => {
+      const looked = seen.get(id)?.focusedAt
+      return looked !== undefined && looked > (marked[id] ?? 0)
+    })
+    if (ended.length > 0) {
+      await saveMarks($, Object.fromEntries(Object.entries(marked).filter(([id]) => !ended.includes(id))))
+    }
   } catch {
     // The states are a hint: the next read tries again.
   }
@@ -472,6 +523,10 @@ const toggleBand = async ($: EngineInterface) => {
 const refresh = async ($: EngineInterface) => {
   await setPins($, await loadPins($))
   await setFlipped($, toKeys(await $.store.get(FLIPPED_KEY)))
+  const stored = toMarks(await $.store.get(MARKS_KEY))
+  if (!same(await read($, marks), stored)) {
+    await update($, marks, () => stored)
+  }
   const isBandOpen = (await $.store.get(BAND_KEY)) === true
   if ((await read($, bandOpen)) !== isBandOpen) {
     await update($, bandOpen, () => isBandOpen)
@@ -533,9 +588,37 @@ const openSession = async ($: EngineInterface, row: SessionRow) => {
     $.ui.toast('You are in this session.')
     return
   }
+  const marked = await read($, marks)
+  if (marked[row.id] !== undefined) {
+    await saveMarks($, Object.fromEntries(Object.entries(marked).filter(([id]) => id !== row.id)))
+  }
   if (row.link === null || !(await openLink($, row.link))) {
     $.ui.toast(`Could not open "${row.title}".`)
   }
+}
+
+/** Marks a session unread: its dot turns blue until the app records a look at it. Only this plugin's dot changes. */
+const markUnread = async ($: EngineInterface, row: SessionRow) => {
+  await saveMarks($, { ...(await read($, marks)), [row.id]: await $.clock.now() })
+  await pollStates($)
+
+  return `Marked "${row.title}" unread.`
+}
+
+/** Renames a session through the app, which may ask the person to approve a title they set themselves. */
+const renameSession = async ($: EngineInterface, row: SessionRow, title: string) => {
+  const name = title.trim()
+  if (name === '') {
+    return 'A name cannot be empty.'
+  }
+  try {
+    await callApp($, 'ccd_session_mgmt', 'set_session_title', { session_id: row.id, title: name })
+  } catch (error) {
+    return `Could not rename "${row.title}": ${String(error instanceof Error ? error.message : error).slice(0, 160)}`
+  }
+  await refresh($)
+
+  return `Renamed "${row.title}" to "${name}".`
 }
 
 const goTo = async ($: EngineInterface, target: Pin) => {
@@ -1419,6 +1502,7 @@ export const register: Register = on => {
     const last = await read($, probe)
     const term = (await read($, filter)).trim().toLowerCase()
     const openMenu = await read($, menu)
+    const openSessionMenu = await read($, sessionMenu)
     const now = last?.at ?? 0
     const room = Math.max(8, e.props.bodyColumns - 10)
     // A project's row also holds its + New and Pin or Unpin buttons.
@@ -1452,7 +1536,16 @@ export const register: Register = on => {
       const title = clip(row.title || 'Untitled session', scope === '' ? room : Math.max(8, room - 12))
       const when = row.id === mine?.id ? 'here' : ago(row.lastActivityAt, now)
 
-      return (
+      const isMenuOpen = openSessionMenu === row.id
+      const moreKey = `${scope}smore:${row.id}`
+      const fieldKey = `${scope}smenu:rename:${row.id}`
+      const unreadKey = `${scope}smenu:unread:${row.id}`
+      const closeKey = `${scope}smenu:close:${row.id}`
+      const closeMenu = () => update($, sessionMenu, () => '')
+      // A session in view, or one that already has a state, has nothing to mark.
+      const canMark = row.id !== mine?.id && value[row.id] === undefined
+
+      const line = (
         <Box
           key={`${scope}srow:${row.id}`}
           flexDirection="row"
@@ -1469,9 +1562,62 @@ export const register: Register = on => {
             ))}
           </Box>
           {scope !== '' && <Text dimColor>{clip(projectName(row), 12)}</Text>}
+          <Box flexDirection="row" {...(isMenuOpen ? {} : onHover)}>
+            {keep(moreKey, [isMenuOpen], () => (
+              <Button
+                key={moreKey}
+                plain
+                dimColor={!isMenuOpen}
+                label="⋯"
+                onPress={async () => {
+                  const open = await read($, sessionMenu)
+                  await update($, sessionMenu, () => (open === row.id ? '' : row.id))
+                }}
+              />
+            ))}
+          </Box>
           <Text dimColor tabular>
             {when}
           </Text>
+        </Box>
+      )
+
+      return (
+        <Box key={`${scope}swrap:${row.id}`} flexDirection="column">
+          {line}
+          {isMenuOpen && (
+            <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} paddingLeft={2}>
+              {Field !== null &&
+                keep(fieldKey, [row.title], () => (
+                  <Field
+                    key={fieldKey}
+                    label="Name"
+                    value={row.title}
+                    submitLabel="rename"
+                    onSubmit={async (text: string) => {
+                      $.ui.toast(await renameSession($, row, text))
+                      await closeMenu()
+                    }}
+                  />
+                ))}
+              {canMark &&
+                keep(unreadKey, [row.title], () => (
+                  <Button
+                    key={unreadKey}
+                    plain
+                    dimColor
+                    label="Mark unread"
+                    onPress={async () => {
+                      $.ui.toast(await markUnread($, row))
+                      await closeMenu()
+                    }}
+                  />
+                ))}
+              {keep(closeKey, [], () => (
+                <Button key={closeKey} plain dimColor label="Close" onPress={closeMenu} />
+              ))}
+            </Box>
+          )}
         </Box>
       )
     }

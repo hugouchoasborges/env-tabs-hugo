@@ -53,6 +53,10 @@ declare module 'claude-code' {
       menu: string
       /** Whether the band above the prompt shows the pinned projects' tabs. */
       bandOpen: boolean
+      /** Sessions the person marked unread in this plugin, by id, with the time of the mark. */
+      marks: Record<string, number>
+      /** The id of the session whose actions menu is open, or an empty text. */
+      sessionMenu: string
     }
   }
 }

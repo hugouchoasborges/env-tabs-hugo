@@ -126,7 +126,9 @@ const world = (
   const clock = mock.clock(on, { now: NOW })
   mock.env(
     on,
-    os === '' ? { HOME: '/Users/me' } : { OS: os, USERPROFILE: USER, APPDATA: `${USER}\\AppData\\Roaming` },
+    os === ''
+      ? { HOME: '/Users/me' }
+      : { OS: os, USERPROFILE: USER, APPDATA: `${USER}\\AppData\\Roaming`, LOCALAPPDATA: `${USER}\\AppData\\Local` },
   )
   const put = fileSystem(on, files)
   // What a session's start meets beneath the plugin, for a test that raises one.
@@ -746,6 +748,44 @@ describe('the Projects pane', () => {
 
     expect(await pane.find({ type: 'Text', text: /Pin a project/ })).toBeDefined()
     expect(await pane.find({ key: 'pin:d:\\projects\\shop' })).toBeDefined()
+  })
+})
+
+describe('the session menu and the records folder', () => {
+  const AT = NOW - 3_600_000
+  const dot = (drawn: unknown, id: string) =>
+    nodeIn(nodeIn(drawn, keyed(`srow:${id}`)), one => one.type === 'Svg')?.props?.alt
+
+  test('finds the session records in the packaged app data folder', async ($, on) => {
+    world(on, {
+      rows: [session('local_u', 'D:\\Projects\\shop', '2026-10-16T11:40:00Z')],
+      files: {
+        [`${USER}\\AppData\\Local\\Claude-Data\\claude_x\\claude-code-sessions\\a\\b\\local_u.json`]: {
+          sessionId: 'local_u',
+          lastFocusedAt: AT - 60_000,
+          lastActivityAt: AT,
+          isArchived: false,
+        },
+      },
+    })
+    await pin($, 'D:\\Projects\\shop')
+
+    expect(dot(await (await mountPane($, 'desktop')).drawn(), 'local_u')).toBe('Unread')
+  })
+
+  test('Mark unread turns an idle session blue', async ($, on) => {
+    world(on, {
+      rows: [session('local_i', 'D:\\Projects\\shop', '2026-10-16T11:20:00Z')],
+      files: { ...record('local_i', AT, AT - 60_000) },
+    })
+    await pin($, 'D:\\Projects\\shop')
+    const pane = await mountPane($, 'desktop')
+    expect(dot(await pane.drawn(), 'local_i')).toBe('Idle')
+
+    await pane.press({ key: 'smore:local_i' })
+    await pane.press({ key: 'smenu:unread:local_i' })
+
+    expect(dot(await pane.drawn(), 'local_i')).toBe('Unread')
   })
 })
 
