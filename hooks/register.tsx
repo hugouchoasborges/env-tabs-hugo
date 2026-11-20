@@ -382,6 +382,9 @@ const recordsDirOf = async ($: EngineInterface) => {
 let sources: { records: string | null; live: string | null } | undefined
 let readCache = new Map<string, Cached>()
 
+/** What the last read of the states saw, per session, for status to print when a dot looks wrong. */
+let trace: { at: number; lines: string[] } | undefined
+
 const readParsed = async <T,>(
   $: EngineInterface,
   path: string,
@@ -488,6 +491,24 @@ const pollStates = async ($: EngineInterface) => {
       }
     }
     await setStates($, value)
+    const clockNow = await $.clock.now()
+    const secs = (at: number | undefined) => (at === undefined || at === 0 ? '-' : `${Math.round((clockNow - at) / 1000)}s`)
+    trace = {
+      at: clockNow,
+      lines: rows
+        .filter(row => live.has(row.id) || value[row.id] !== undefined)
+        .slice(0, 20)
+        .map(row => {
+          const own = live.get(row.id)
+          const look = seen.get(row.id)
+
+          return (
+            `  ${row.id.slice(0, 14)} "${clip(row.title || 'Untitled', 28)}": file ${own?.status ?? 'none'} (${secs(own?.at)} ago), ` +
+            `list isRunning ${row.isRunning}, last look ${secs(look?.focusedAt)} ago, last activity ${secs(look?.activityAt)} ago` +
+            ` -> ${value[row.id] ?? 'idle'}`
+          )
+        }),
+    }
     // A mark ends once the app records a look at the session after it.
     const ended = Object.keys(marked).filter(id => {
       const looked = seen.get(id)?.focusedAt
@@ -1247,6 +1268,7 @@ const describe = (list: readonly Pin[], rows: readonly SessionRow[]) => {
 
 const status = async ($: EngineInterface) => {
   await refresh($)
+  await pollStates($)
   const last = await read($, probe)
   const rows = await read($, sessions)
 
@@ -1256,6 +1278,9 @@ const status = async ($: EngineInterface) => {
       ? `Session list: ${rows.length} other sessions read.`
       : `Session list: unavailable (${last?.error ?? 'not read yet'}).`,
     statesLine(),
+    ...(trace === undefined
+      ? []
+      : [`States read just now; what each session showed:`, ...(trace.lines.length > 0 ? trace.lines : ['  (no session with a state)'])]),
     '',
     describe(await read($, pins), rows),
   ].join('\n')
