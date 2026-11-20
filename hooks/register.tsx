@@ -670,32 +670,6 @@ const markRead = async ($: EngineInterface, rows: readonly SessionRow[]) => {
   return rows.length === 1 ? `Marked "${rows[0]?.title ?? ''}" read.` : `Marked ${rows.length} sessions read.`
 }
 
-/** Renames a session through the app, which may ask the person to approve a title they set themselves. */
-const renameSession = async ($: EngineInterface, row: SessionRow, title: string) => {
-  const name = title.trim()
-  if (name === '') {
-    return 'A name cannot be empty.'
-  }
-  try {
-    // $.mcp.call is refused here: the app wants a person's approval to retitle a session. This call carries
-    // the person's own action, typing the name in the pane's field and pressing Enter, as its consent.
-    const out = await $.tool.call({
-      tool: 'mcp__ccd_session_mgmt__set_session_title',
-      session_id: row.id,
-      title: name,
-      consent: `The user typed the new name "${name}" in the Name field of the Projects pane and pressed Enter, to rename the session "${row.title}".`,
-    })
-    if ('deny' in out) {
-      return `Could not rename "${row.title}": ${String(out.deny).slice(0, 160)}`
-    }
-  } catch (error) {
-    return `Could not rename "${row.title}": ${String(error instanceof Error ? error.message : error).slice(0, 160)}`
-  }
-  await refresh($)
-
-  return `Renamed "${row.title}" to "${name}".`
-}
-
 const goTo = async ($: EngineInterface, target: Pin) => {
   await refresh($)
   const list = await read($, pins)
@@ -1635,7 +1609,6 @@ export const register: Register = on => {
 
       const isMenuOpen = openSessionMenu === row.id
       const moreKey = `${scope}smore:${row.id}`
-      const fieldKey = `${scope}smenu:rename:${row.id}`
       const unreadKey = `${scope}smenu:unread:${row.id}`
       const readKey = `${scope}smenu:read:${row.id}`
       const closeKey = `${scope}smenu:close:${row.id}`
@@ -1685,19 +1658,6 @@ export const register: Register = on => {
           {line}
           {isMenuOpen && (
             <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} paddingLeft={2}>
-              {Field !== null &&
-                keep(fieldKey, [row.title], () => (
-                  <Field
-                    key={fieldKey}
-                    label="Name"
-                    value={row.title}
-                    submitLabel="rename"
-                    onSubmit={async (text: string) => {
-                      $.ui.toast(await renameSession($, row, text))
-                      await closeMenu()
-                    }}
-                  />
-                ))}
               {canMark &&
                 keep(unreadKey, [row.title], () => (
                   <Button
