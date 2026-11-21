@@ -1682,14 +1682,14 @@ export const register: Register = on => {
       const title = clip(row.title || 'Untitled session', scope === '' ? room : Math.max(8, room - 12))
       const when = row.id === mine?.id ? 'here' : ago(row.lastActivityAt, now)
 
-      const isMenuOpen = openSessionMenu === row.id
+      // A session listed twice (Active and its project) opens only the menu that was pressed.
+      const menuId = `${scope}${row.id}`
+      const isMenuOpen = openSessionMenu === menuId
       const moreKey = `${scope}smore:${row.id}`
       const unreadKey = `${scope}smenu:unread:${row.id}`
       const readKey = `${scope}smenu:read:${row.id}`
       const closeKey = `${scope}smenu:close:${row.id}`
       const closeMenu = () => update($, sessionMenu, () => '')
-      // A session in view, or one that already has a state, has nothing to mark.
-      const canMark = row.id !== mine?.id && value[row.id] === undefined
 
       const line = (
         <Box
@@ -1717,7 +1717,7 @@ export const register: Register = on => {
                 label="⋯"
                 onPress={async () => {
                   const open = await read($, sessionMenu)
-                  await update($, sessionMenu, () => (open === row.id ? '' : row.id))
+                  await update($, sessionMenu, () => (open === menuId ? '' : menuId))
                 }}
               />
             ))}
@@ -1733,19 +1733,18 @@ export const register: Register = on => {
           {line}
           {isMenuOpen && (
             <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} paddingLeft={2}>
-              {canMark &&
-                keep(unreadKey, [row.title], () => (
-                  <Button
-                    key={unreadKey}
-                    plain
-                    dimColor
-                    label="Mark as Unread"
-                    onPress={async () => {
-                      $.ui.toast(await markUnread($, row))
-                      await closeMenu()
-                    }}
-                  />
-                ))}
+              {keep(unreadKey, [row.title], () => (
+                <Button
+                  key={unreadKey}
+                  plain
+                  dimColor
+                  label="Mark as Unread"
+                  onPress={async () => {
+                    $.ui.toast(await markUnread($, row))
+                    await closeMenu()
+                  }}
+                />
+              ))}
               {value[row.id] === 'unread' &&
                 keep(readKey, [row.title], () => (
                   <Button
