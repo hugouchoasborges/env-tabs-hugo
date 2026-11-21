@@ -1619,6 +1619,16 @@ export const register: Register = on => {
             }}
           />
         ))}
+        {mine !== null &&
+          keep('mark-unread', [mine.id, mine.title], () => (
+            <Button
+              key="mark-unread"
+              plain
+              dimColor
+              label="Mark as Unread"
+              onPress={async () => $.ui.toast(await markUnread($, mine))}
+            />
+          ))}
         {activity}
         </Box>
       </Box>
@@ -1729,7 +1739,7 @@ export const register: Register = on => {
                     key={unreadKey}
                     plain
                     dimColor
-                    label="Mark unread"
+                    label="Mark as Unread"
                     onPress={async () => {
                       $.ui.toast(await markUnread($, row))
                       await closeMenu()
